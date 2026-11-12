@@ -53,6 +53,41 @@ struct IconButton: View {
     }
 }
 
+/// The two output actions share one shape, height and type size; only the
+/// fill tells the primary action (copy) from the secondary one (save).
+struct ActionButton: View {
+    let title: String
+    let symbol: String
+    let prominent: Bool
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 15, height: 15)
+                Text(title).font(.system(size: 12, weight: .semibold))
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .foregroundStyle(prominent ? Color.white : Color.primary.opacity(0.85))
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(prominent ? Color.accentColor.opacity(hovering ? 0.88 : 1)
+                                    : Color.primary.opacity(hovering ? 0.14 : 0.08))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
 struct ToolbarView: View {
     @ObservedObject var state: EditorState
 
@@ -147,21 +182,14 @@ struct ToolbarView: View {
 
             separator
 
-            IconButton(symbol: "square.and.arrow.down", help: "保存… (⌘S)") {
-                state.save(from: state.canvas?.window)
-            }
-            Button {
-                state.copyToClipboard()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "doc.on.doc")
-                    Text("复制")
+            HStack(spacing: 6) {
+                ActionButton(title: "保存", symbol: "square.and.arrow.down", prominent: false, help: "保存… (⌘S)") {
+                    state.save(from: state.canvas?.window)
                 }
-                .font(.system(size: 12, weight: .semibold))
+                ActionButton(title: "复制", symbol: "doc.on.doc", prominent: true, help: "复制到剪贴板 (⌘C)") {
+                    state.copyToClipboard()
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .fixedSize()
-            .help("复制到剪贴板 (⌘C)")
         }
         .padding(.trailing, 12)
         .frame(height: 52)
