@@ -20,7 +20,7 @@ enum Demo {
         var label = Annotation(kind: .text, start: CGPoint(x: 452, y: 262), end: .zero, color: red, lineWidth: 3)
         label.text = "敏感信息已自动打码"
         var note = Annotation(kind: .text, start: CGPoint(x: 470, y: 98), end: .zero, color: blue, lineWidth: 3)
-        note.text = "重点看这里"
+        note.text = CommandLine.arguments.contains("--demo-textbox") ? "重点看这里，\n多行文字" : "重点看这里"
         annotations += [
             Annotation(kind: .rect, start: CGPoint(x: 34, y: 92), end: CGPoint(x: 440, y: 136), color: blue, lineWidth: 3),
             note,
@@ -34,13 +34,49 @@ enum Demo {
         decoration.enabled = true
         state.decoration = decoration
         state.showInspector = true
-        state.tool = .arrow
         // Leave the user's saved decoration untouched.
         UserDefaults.standard.set(previous, forKey: "decoration.v1")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             if let number = state.canvas?.window?.windowNumber { print("WINDOW \(number)") }
             fflush(stdout)
+            // `--demo-textbox` selects the multi-line text annotation to show its handles.
+            if CommandLine.arguments.contains("--demo-textbox") {
+                state.tool = .select
+                state.select(note.id)
+            }
+            // `--demo-select` shows a mouse text selection.
+            if CommandLine.arguments.contains("--demo-select") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    guard let layout = state.textLayout, layout.lines.count > 2 else { return }
+                    state.tool = .select
+                    state.textSelection = TextRange(anchor: TextPosition(line: 1, caret: 4),
+                                                    head: TextPosition(line: 2, caret: 9))
+                    print("SELECTED \(state.selectedText ?? "")")
+                    fflush(stdout)
+                }
+            }
+            // `--demo-fonts` selects the text annotation and opens the font drop-down.
+            if CommandLine.arguments.contains("--demo-fonts") {
+                state.tool = .select
+                state.select(note.id)
+                state.fontPickerOpen = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    for window in NSApp.windows where window.isVisible && window !== state.canvas?.window {
+                        print("POPOVER \(window.windowNumber)")
+                    }
+                    fflush(stdout)
+                }
+            }
+            // `--demo-widths` also opens the line-width drop-down.
+            guard CommandLine.arguments.contains("--demo-widths") else { return }
+            state.widthPickerOpen = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                for window in NSApp.windows where window.isVisible && window !== state.canvas?.window {
+                    print("POPOVER \(window.windowNumber)")
+                }
+                fflush(stdout)
+            }
         }
     }
 

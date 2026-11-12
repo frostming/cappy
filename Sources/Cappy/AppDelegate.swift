@@ -3,7 +3,7 @@ import Carbon.HIToolbox
 import UniformTypeIdentifiers
 
 enum CaptureMode: Int, CaseIterable {
-    case region, window, fullscreen, scroll, ocr
+    case region, window, fullscreen, scroll
 
     var title: String {
         switch self {
@@ -11,7 +11,6 @@ enum CaptureMode: Int, CaseIterable {
         case .window: return "窗口截图"
         case .fullscreen: return "全屏截图"
         case .scroll: return "滚动长截图"
-        case .ocr: return "截取文字 (OCR)"
         }
     }
 
@@ -21,13 +20,7 @@ enum CaptureMode: Int, CaseIterable {
         case .window: return "macwindow"
         case .fullscreen: return "display"
         case .scroll: return "arrow.up.and.down.text.horizontal"
-        case .ocr: return "text.viewfinder"
         }
-    }
-
-    /// ⌃⌥1 … ⌃⌥5
-    var keyCode: Int {
-        [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5][rawValue]
     }
 }
 
@@ -41,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var demo = false
     var frontEditorState: EditorState? { editors.last?.state }
     private let recentMenu = NSMenu()
+    private var shortcutSettings: ShortcutSettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
@@ -49,10 +43,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         setUpStatusItem()
+        registerHotKeys()
+    }
+
+    // MARK: Shortcuts
+
+    private func registerHotKeys() {
+        HotKeyCenter.shared.unregisterAll()
         for mode in CaptureMode.allCases {
-            HotKeyCenter.shared.register(keyCode: mode.keyCode, modifiers: controlKey | optionKey) { [weak self] in
+            guard let shortcut = ShortcutStore.shortcut(for: mode) else { continue }
+            HotKeyCenter.shared.register(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
                 self?.begin(mode)
             }
+        }
+    }
+
+    @objc private func openShortcutSettings() {
+        if shortcutSettings == nil {
+            let controller = ShortcutSettingsWindowController()
+            controller.onChange = { [weak self] in
+                self?.registerHotKeys()
+                self?.refreshCaptureMenuItems()
+            }
+            // While a new shortcut is being recorded, the old ones must not fire.
+            controller.onRecording = { [weak self] recording in
+                if recording { HotKeyCenter.shared.unregisterAll() } else { self?.registerHotKeys() }
+            }
+            shortcutSettings = controller
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        shortcutSettings?.showWindow(nil)
+        shortcutSettings?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Shows the current shortcuts next to the capture commands in the menu.
+    private func refreshCaptureMenuItems() {
+        for item in statusItem.menu?.items ?? [] where item.action == #selector(captureItemClicked(_:)) {
+            guard let mode = CaptureMode(rawValue: item.tag) else { continue }
+            let shortcut = ShortcutStore.shortcut(for: mode)
+            item.keyEquivalent = shortcut?.menuKeyEquivalent ?? ""
+            item.keyEquivalentModifierMask = shortcut?.modifierFlags ?? []
         }
     }
 
@@ -71,14 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         for mode in CaptureMode.allCases {
-            let item = NSMenuItem(title: mode.title, action: #selector(captureItemClicked(_:)),
-                                  keyEquivalent: "\(mode.rawValue + 1)")
-            item.keyEquivalentModifierMask = [.control, .option]
+            let item = NSMenuItem(title: mode.title, action: #selector(captureItemClicked(_:)), keyEquivalent: "")
             item.tag = mode.rawValue
             item.target = self
             item.image = NSImage(systemSymbolName: mode.symbol, accessibilityDescription: nil)
             menu.addItem(item)
-            if mode == .scroll { menu.addItem(.separator()) }
         }
         menu.addItem(.separator())
         let recent = NSMenuItem(title: "最近截图", action: nil, keyEquivalent: "")
@@ -89,8 +116,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "打开图片…", action: #selector(openImageFile), keyEquivalent: "").target = self
         menu.addItem(withTitle: "编辑剪贴板中的图片", action: #selector(openClipboardImage), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        menu.addItem(withTitle: "快捷键设置…", action: #selector(openShortcutSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "退出 Cappy", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
+        refreshCaptureMenuItems()
     }
 
     // MARK: Recent captures
@@ -171,7 +200,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let hint: String
                 switch mode {
                 case .scroll: hint = "拖拽框选要滚动截取的区域"
-                case .ocr: hint = "拖拽框选要识别文字的区域"
                 default: hint = "拖拽选择截图区域"
                 }
                 let controller = SelectionOverlayController(
@@ -180,7 +208,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     allowsWindowToggle: mode == .region || mode == .window,
                     regionHint: hint
                 ) { [weak self] result in
+                    let finishedOverlay = self?.overlay
                     self?.overlay = nil
+                    // Everything except opening the editor continues in the app
+                    // the user came from, so give it the focus back.
+                    switch (result, mode) {
+                    case (.cancelled, _), (.region, .scroll):
+                        finishedOverlay?.restorePreviousApp()
+                    default:
+                        break
+                    }
                     self?.handle(result, mode: mode)
                 }
                 self.overlay = controller
@@ -209,25 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 scrollSession = session
                 session.start()
-            case .ocr:
-                recognizeText(in: shot)
             default:
                 openCapture(shot)
-            }
-        }
-    }
-
-    private func recognizeText(in shot: Shot) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let text = VisionService.plainText((try? VisionService.recognize(shot.image)) ?? [])
-            DispatchQueue.main.async {
-                guard !text.isEmpty else {
-                    Toast.show("未识别到文字")
-                    return
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-                Toast.show("已复制 \(text.count) 个字符")
             }
         }
     }
@@ -246,6 +266,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Back to the editor from a pinned image. If the same capture is already
+    /// open (reopened from the recent list meanwhile), that window wins.
+    func reopenEditor(_ shot: Shot, recentID: UUID?, annotations: [Annotation]) {
+        if let recentID, let open = editors.first(where: { $0.state.recentID == recentID }) {
+            NSApp.activate(ignoringOtherApps: true)
+            open.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        openEditor(shot, recentID: recentID, annotations: annotations)
     }
 
     @objc private func openImageFile() {

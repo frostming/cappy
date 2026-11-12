@@ -3,6 +3,13 @@ import SwiftUI
 
 final class EditorWindow: NSWindow {
     weak var editorState: EditorState?
+    /// The most recent mouse-down, which `performDrag(with:)` needs to start a window drag.
+    private(set) var lastMouseDown: NSEvent?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown { lastMouseDown = event }
+        super.sendEvent(event)
+    }
 
     /// Keys nobody in the responder chain consumed (e.g. focus sits on a
     /// toolbar control) still reach the canvas shortcuts.
@@ -17,7 +24,30 @@ final class EditorWindow: NSWindow {
     }
 }
 
-final class EditorWindowController: NSWindowController, NSWindowDelegate {
+/// The toolbar is drawn inside the title bar area, where AppKit treats a
+/// plain `NSHostingView` as title bar: dragging a slider moved the window and
+/// double-clicking a button zoomed it. The editor window is therefore not
+/// system-movable (`isMovable = false`) and the hosting view does not report
+/// `mouseDownCanMoveWindow`; `ToolbarDragArea` (in the toolbar's background,
+/// behind its controls) starts window drags and handles the title bar
+/// double-click itself.
+final class EditorHostingView<Content: View>: NSHostingView<Content> {
+    /// Height of the toolbar row at the top of the window.
+    static var toolbarHeight: CGFloat { 52 }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    /// Like a real title bar, the toolbar works on the click that activates
+    /// the window, so an inactive editor window can still be dragged by it.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        if let event, let window, event.locationInWindow.y >= window.frame.height - Self.toolbarHeight {
+            return true
+        }
+        return super.acceptsFirstMouse(for: event)
+    }
+}
+
+final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
     let state: EditorState
     var onClose: ((EditorWindowController) -> Void)?
 
@@ -27,7 +57,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         let visible = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
         let canvas = state.canvasSize
         let inspector: CGFloat = state.showInspector ? 249 : 0
-        let width = min(visible.width * 0.9, max(1000, canvas.width + 96 + inspector))
+        let width = min(visible.width * 0.9, max(1160, canvas.width + 96 + inspector))
         let height = min(visible.height * 0.9, max(600, canvas.height + 96 + 53))
 
         let window = EditorWindow(
@@ -41,8 +71,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         window.toolbar = NSToolbar()
         window.toolbarStyle = .unified
         window.isReleasedWhenClosed = false
-        window.minSize = CGSize(width: 1000, height: 480)
-        window.contentView = NSHostingView(rootView: EditorView(state: state))
+        window.isMovable = false
+        window.minSize = CGSize(width: 1160, height: 480)
+        window.contentView = EditorHostingView(rootView: EditorView(state: state))
         window.setContentSize(CGSize(width: width, height: height))
         window.center()
 
@@ -59,11 +90,55 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Menu actions (reached through the responder chain)
 
-    @objc func copy(_ sender: Any?) { state.copyToClipboard() }
-    @objc func undo(_ sender: Any?) { state.undo() }
-    @objc func redo(_ sender: Any?) { state.redo() }
+    /// ⌘C copies the mouse-selected text when there is one, otherwise the image.
+    ///
+    /// Selection helpers such as PopClip press ⌘C on the user's behalf after
+    /// every mouse drag to find out what was selected. Answering that with the
+    /// whole image would replace the clipboard and flash "copied" after a
+    /// marquee or a drawn shape, so a ⌘C that another process synthesized only
+    /// ever copies selected text.
+    @objc func copy(_ sender: Any?) {
+        if state.copySelectedText() { return }
+        if Self.isSynthesizedByAnotherProcess(NSApp.currentEvent) { return }
+        state.copyToClipboard()
+    }
+
+    /// True for a key event posted by another process rather than typed on a keyboard.
+    static func isSynthesizedByAnotherProcess(_ event: NSEvent?) -> Bool {
+        guard let event, event.type == .keyDown || event.type == .keyUp, let cgEvent = event.cgEvent else { return false }
+        let pid = cgEvent.getIntegerValueField(.eventSourceUnixProcessID)
+        return pid != 0 && pid != Int64(getpid())
+    }
+
+    @objc override func selectAll(_ sender: Any?) { state.selectAllText() }
+    // Not named `undo:` / `redo:`: NSWindow answers those itself (for its own,
+    // empty, undo manager), so the actions would never get past the window.
+    @objc func undoEdit(_ sender: Any?) {
+        if !forwardToFieldEditor(Selector(("undo:"))) { state.undo() }
+    }
+
+    @objc func redoEdit(_ sender: Any?) {
+        if !forwardToFieldEditor(Selector(("redo:"))) { state.redo() }
+    }
+
+    /// While a text annotation is being typed, ⌘Z undoes typing rather than annotations.
+    private func forwardToFieldEditor(_ action: Selector) -> Bool {
+        guard let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor else { return false }
+        editor.undoManager.map { action == Selector(("undo:")) ? $0.undo() : $0.redo() }
+        return true
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let typing = (window?.firstResponder as? NSTextView)?.isFieldEditor == true
+        switch item.action {
+        case #selector(undoEdit(_:)): return typing || state.canUndo
+        case #selector(redoEdit(_:)): return typing || state.canRedo
+        default: return true
+        }
+    }
     @objc func delete(_ sender: Any?) { state.deleteSelected() }
     @objc func saveDocument(_ sender: Any?) { state.save(from: window) }
+    @objc func pinImage(_ sender: Any?) { state.pinToScreen() }
     @objc func zoomImageIn(_ sender: Any?) { state.canvas?.setZoom(state.zoom * 1.25) }
     @objc func zoomImageOut(_ sender: Any?) { state.canvas?.setZoom(state.zoom / 1.25) }
     @objc func zoomImageToFit(_ sender: Any?) { state.canvas?.zoomToFit() }
@@ -83,12 +158,13 @@ enum MainMenu {
 
         let file = NSMenu(title: "文件")
         file.addItem(withTitle: "保存…", action: #selector(EditorWindowController.saveDocument(_:)), keyEquivalent: "s")
+        file.addItem(withTitle: "悬浮到屏幕", action: #selector(EditorWindowController.pinImage(_:)), keyEquivalent: "f")
         file.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         add(file, title: "文件", to: main)
 
         let edit = NSMenu(title: "编辑")
-        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = edit.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "撤销", action: #selector(EditorWindowController.undoEdit(_:)), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "重做", action: #selector(EditorWindowController.redoEdit(_:)), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         edit.addItem(.separator())
         edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")

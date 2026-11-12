@@ -198,7 +198,8 @@ enum Renderer {
             guard !a.text.isEmpty else { return }
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-            a.attributedText.draw(at: a.start)
+            a.attributedText.draw(with: CGRect(origin: a.start, size: CGSize(width: a.boxWidth ?? 100_000, height: 100_000)),
+                                  options: Annotation.textDrawingOptions)
             NSGraphicsContext.restoreGraphicsState()
         case .mosaic:
             guard let small = mosaic.small else { return }

@@ -8,12 +8,14 @@ final class HotKeyCenter {
     private var handlers: [UInt32: () -> Void] = [:]
     private var refs: [EventHotKeyRef?] = []
     private var installed = false
+    private var nextID: UInt32 = 0
 
     /// Returns false when the combination is already taken by another app.
     @discardableResult
     func register(keyCode: Int, modifiers: Int, handler: @escaping () -> Void) -> Bool {
         install()
-        let id = UInt32(handlers.count + 1)
+        nextID += 1
+        let id = nextID
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x4341_5059), id: id) // "CAPY"
         let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
@@ -22,6 +24,13 @@ final class HotKeyCenter {
         handlers[id] = handler
         refs.append(ref)
         return true
+    }
+
+    /// Drops every registered hot key (before re-registering changed shortcuts).
+    func unregisterAll() {
+        for ref in refs { if let ref { UnregisterEventHotKey(ref) } }
+        refs.removeAll()
+        handlers.removeAll()
     }
 
     private func install() {

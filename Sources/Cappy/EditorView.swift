@@ -53,6 +53,248 @@ struct IconButton: View {
     }
 }
 
+/// A horizontal stroke drawn at its real thickness.
+struct LineSample: View {
+    let width: CGFloat
+
+    var body: some View {
+        Capsule().fill(Color.primary.opacity(0.85)).frame(height: width)
+    }
+}
+
+/// Drop-down for the stroke width (which also drives the text size); every
+/// option shows the line at its actual thickness.
+struct LineWidthPicker: View {
+    @ObservedObject var state: EditorState
+    @State private var hovering = false
+
+    static let widths: [CGFloat] = [1, 2, 3, 4, 6, 8, 10, 14]
+
+    var body: some View {
+        Button { state.widthPickerOpen.toggle() } label: {
+            HStack(spacing: 7) {
+                LineSample(width: state.lineWidth).frame(width: 30, height: 16)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(hovering || state.widthPickerOpen ? 0.14 : 0.08))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("线宽 / 字号")
+        .popover(isPresented: $state.widthPickerOpen, arrowEdge: .bottom) {
+            VStack(spacing: 2) {
+                ForEach(Self.widths, id: \.self) { width in
+                    LineWidthRow(width: width, selected: state.lineWidth == width) {
+                        state.applyLineWidth(width)
+                        state.widthPickerOpen = false
+                    }
+                }
+            }
+            .padding(6)
+        }
+    }
+}
+
+private struct LineWidthRow: View {
+    let width: CGFloat
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .opacity(selected ? 1 : 0)
+                    .frame(width: 12)
+                LineSample(width: width).frame(width: 96, height: 22)
+                Text("\(Int(width)) pt")
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(hovering ? 0.1 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The pill-shaped drop-down button shared by the toolbar pickers.
+struct PickerButton<Label: View>: View {
+    let open: Bool
+    let help: String
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                label()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(hovering || open ? 0.14 : 0.08))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
+/// One row of a picker popover.
+struct PickerRow<Content: View>: View {
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .opacity(selected ? 1 : 0)
+                    .frame(width: 12)
+                content()
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(hovering ? 0.1 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+enum FontCatalog {
+    /// Shown first when installed.
+    private static let preferred = [
+        "PingFang SC", "Songti SC", "Kaiti SC", "Yuanti SC", "Hiragino Sans GB", "Helvetica Neue", "Arial",
+        "Georgia", "Times New Roman", "Menlo", "Courier New", "Marker Felt",
+    ]
+
+    static let all: [String] = NSFontManager.shared.availableFontFamilies.filter { !$0.hasPrefix(".") }
+    static let common: [String] = preferred.filter { all.contains($0) }
+
+    static func displayName(_ family: String?) -> String {
+        guard let family else { return "系统字体" }
+        return NSFontManager.shared.localizedName(forFamily: family, face: nil)
+    }
+}
+
+/// Font family drop-down; each family is shown in its own typeface.
+struct FontPicker: View {
+    @ObservedObject var state: EditorState
+
+    var body: some View {
+        PickerButton(open: state.fontPickerOpen, help: "字体") { state.fontPickerOpen.toggle() } label: {
+            Text(FontCatalog.displayName(state.fontName))
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 66, alignment: .leading)
+        }
+        .popover(isPresented: $state.fontPickerOpen, arrowEdge: .bottom) {
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    row(nil)
+                    if !FontCatalog.common.isEmpty {
+                        header("常用")
+                        ForEach(FontCatalog.common, id: \.self) { row($0) }
+                    }
+                    header("全部字体")
+                    ForEach(FontCatalog.all, id: \.self) { row($0) }
+                }
+                .padding(6)
+            }
+            .frame(width: 240, height: 360)
+        }
+    }
+
+    private func header(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+    }
+
+    private func row(_ family: String?) -> some View {
+        PickerRow(selected: state.fontName == family) {
+            state.applyFontName(family)
+            state.fontPickerOpen = false
+        } content: {
+            Text(FontCatalog.displayName(family))
+                .font(family.map { Font.custom($0, size: 14) } ?? .system(size: 14, weight: .semibold))
+                .lineLimit(1)
+        }
+    }
+}
+
+/// Text size drop-down.
+struct FontSizePicker: View {
+    @ObservedObject var state: EditorState
+
+    static let sizes: [CGFloat] = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 96]
+
+    var body: some View {
+        PickerButton(open: state.fontSizePickerOpen, help: "字号") { state.fontSizePickerOpen.toggle() } label: {
+            Text(Self.label(state.fontSize))
+                .font(.system(size: 12).monospacedDigit())
+                .frame(width: 22, alignment: .leading)
+        }
+        .popover(isPresented: $state.fontSizePickerOpen, arrowEdge: .bottom) {
+            VStack(spacing: 2) {
+                ForEach(Self.sizes, id: \.self) { size in
+                    PickerRow(selected: state.fontSize == size) {
+                        state.applyFontSize(size)
+                        state.fontSizePickerOpen = false
+                    } content: {
+                        Text(Self.label(size)).font(.system(size: 13).monospacedDigit())
+                    }
+                }
+            }
+            .padding(6)
+            .frame(width: 96)
+        }
+    }
+
+    static func label(_ size: CGFloat) -> String {
+        size == size.rounded() ? "\(Int(size))" : String(format: "%.1f", size)
+    }
+}
+
 /// The two output actions share one shape, height and type size; only the
 /// fill tells the primary action (copy) from the secondary one (save).
 struct ActionButton: View {
@@ -85,6 +327,39 @@ struct ActionButton: View {
         .fixedSize()
         .onHover { hovering = $0 }
         .help(help)
+    }
+}
+
+/// Empty toolbar space behaves like a title bar: dragging moves the window,
+/// and a double-click zooms or minimizes it according to the system
+/// "double-click a window's title bar" setting. Controls in front of it take
+/// their own clicks, so they never move or zoom the window.
+struct ToolbarDragArea: View {
+    let window: () -> NSWindow?
+    /// Start point of the gesture that already handed the drag to the window server.
+    @State private var handedOff: CGPoint?
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 3)
+                    .onChanged { value in
+                        guard handedOff != value.startLocation, let window = window(),
+                              let event = (window as? EditorWindow)?.lastMouseDown ?? NSApp.currentEvent else { return }
+                        handedOff = value.startLocation
+                        window.performDrag(with: event)
+                    }
+                    .onEnded { _ in handedOff = nil }
+            )
+            .onTapGesture(count: 2) {
+                guard let window = window() else { return }
+                switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+                case "None": break
+                case "Minimize": window.performMiniaturize(nil)
+                default: window.performZoom(nil)
+                }
+            }
     }
 }
 
@@ -128,17 +403,16 @@ struct ToolbarView: View {
                     set: { state.applyColor(RGBA(NSColor($0))) }
                 ), supportsOpacity: true)
                 .labelsHidden()
-                .frame(width: 28)
+                .frame(width: 44)
                 .help("自定义颜色")
             }
 
-            HStack(spacing: 4) {
-                Image(systemName: "lineweight").font(.system(size: 12)).foregroundStyle(.secondary)
-                Slider(value: Binding(get: { state.lineWidth }, set: { state.applyLineWidth($0.rounded()) }), in: 1...14)
-                    .controlSize(.small)
-                    .frame(width: 84)
+            if state.editsText {
+                FontPicker(state: state)
+                FontSizePicker(state: state)
+            } else {
+                LineWidthPicker(state: state)
             }
-            .help("线宽 / 字号")
 
             if showsFill {
                 IconButton(symbol: state.filled ? "square.fill" : "square", active: state.filled, help: "填充形状") {
@@ -159,8 +433,6 @@ struct ToolbarView: View {
                 if state.busy {
                     ProgressView().controlSize(.small).frame(width: 30, height: 28)
                 } else {
-                    IconButton(symbol: "text.viewfinder", help: "OCR 文字识别") { state.runOCR() }
-                }
                 Menu {
                     Button("自动（敏感信息 + 人脸）") { state.smartMosaic(.auto) }
                     Divider()
@@ -173,14 +445,18 @@ struct ToolbarView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .frame(width: 30, height: 28)
-                .disabled(state.busy)
                 .help("智能马赛克")
+                }
                 IconButton(symbol: "photo.artframe", active: state.showInspector, help: "截图装饰") {
                     state.toggleInspector()
                 }
             }
 
             separator
+
+            IconButton(symbol: "pin", help: "悬浮到屏幕 (⌘F)；点击悬浮图后按 Esc 取消，双击回到编辑") {
+                state.pinToScreen()
+            }
 
             HStack(spacing: 6) {
                 ActionButton(title: "保存", symbol: "square.and.arrow.down", prominent: false, help: "保存… (⌘S)") {
@@ -193,6 +469,7 @@ struct ToolbarView: View {
         }
         .padding(.trailing, 12)
         .frame(height: 52)
+        .background(ToolbarDragArea { state.canvas?.window })
         .background(.bar)
     }
 
@@ -318,35 +595,6 @@ struct InspectorView: View {
     }
 }
 
-struct OCRSheet: View {
-    @ObservedObject var state: EditorState
-    @State private var text = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("识别结果").font(.headline)
-            TextEditor(text: $text)
-                .font(.system(size: 13))
-                .frame(minWidth: 460, minHeight: 280)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15)))
-            HStack {
-                Text("\(text.count) 个字符").font(.callout).foregroundStyle(.secondary)
-                Spacer()
-                Button("关闭") { state.ocrText = nil }.keyboardShortcut(.cancelAction)
-                Button("复制全部") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                    state.ocrText = nil
-                    state.showToast("文字已复制")
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(16)
-        .onAppear { text = state.ocrText ?? "" }
-    }
-}
-
 struct EditorView: View {
     @ObservedObject var state: EditorState
 
@@ -384,9 +632,6 @@ struct EditorView: View {
             }
         }
         .ignoresSafeArea()
-        .sheet(isPresented: Binding(get: { state.ocrText != nil }, set: { if !$0 { state.ocrText = nil } })) {
-            OCRSheet(state: state)
-        }
     }
 
     private var zoomControl: some View {

@@ -39,7 +39,7 @@ enum Tool: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .select: return "选择"
+        case .select: return "选择 / 拖选图中文字"
         case .arrow: return "箭头"
         case .line: return "直线"
         case .rect: return "矩形"
@@ -106,18 +106,41 @@ struct Annotation: Identifiable, Equatable, Codable {
     var color: RGBA
     var lineWidth: CGFloat
     var filled = false
+    /// Text only: the width the text wraps at. nil = as wide as its longest line.
+    var boxWidth: CGFloat?
+    /// Text only: the box height, never less than the text needs. nil = fit the text.
+    var boxHeight: CGFloat?
+    /// Text only: point size. nil in captures saved before text had its own
+    /// size, where it was derived from the line width.
+    var fontPointSize: CGFloat?
+    /// Text only: font family. nil = the system font.
+    var fontName: String?
 
-    var fontSize: CGFloat { Annotation.fontSize(forLineWidth: lineWidth) }
+    static let defaultFontSize: CGFloat = 24
 
-    static func fontSize(forLineWidth w: CGFloat) -> CGFloat { 8 + w * 4 }
+    var fontSize: CGFloat { fontPointSize ?? 8 + lineWidth * 4 }
 
-    static func font(size: CGFloat) -> NSFont { .systemFont(ofSize: size, weight: .semibold) }
+    static func font(name: String?, size: CGFloat) -> NSFont {
+        if let name, let font = NSFontManager.shared.font(withFamily: name, traits: [], weight: 5, size: size) {
+            return font
+        }
+        return .systemFont(ofSize: size, weight: .semibold)
+    }
 
     var attributedText: NSAttributedString {
         NSAttributedString(string: text, attributes: [
-            .font: Annotation.font(size: fontSize),
+            .font: Annotation.font(name: fontName, size: fontSize),
             .foregroundColor: color.nsColor,
         ])
+    }
+
+    static let textDrawingOptions: NSString.DrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading]
+
+    /// Laid-out size of a (possibly multi-line, possibly wrapped) string.
+    static func textSize(_ string: NSAttributedString, wrapWidth: CGFloat?) -> CGSize {
+        let limit = CGSize(width: wrapWidth ?? 100_000, height: 100_000)
+        let rect = string.boundingRect(with: limit, options: textDrawingOptions)
+        return CGSize(width: rect.width.rounded(.up), height: rect.height.rounded(.up))
     }
 
     /// Normalized rectangle spanned by start/end.
@@ -133,8 +156,9 @@ struct Annotation: Identifiable, Equatable, Codable {
             for p in points { r = r.union(CGRect(origin: p, size: .zero)) }
             return r.insetBy(dx: -lineWidth / 2, dy: -lineWidth / 2)
         case .text:
-            let size = attributedText.size()
-            return CGRect(origin: start, size: CGSize(width: max(size.width, 8), height: max(size.height, fontSize)))
+            let size = Annotation.textSize(attributedText, wrapWidth: boxWidth)
+            return CGRect(origin: start, size: CGSize(width: boxWidth ?? max(size.width, 8),
+                                                      height: max(size.height, fontSize, boxHeight ?? 0)))
         default:
             return rect
         }

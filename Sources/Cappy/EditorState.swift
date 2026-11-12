@@ -16,16 +16,27 @@ final class EditorState: ObservableObject {
     let mosaic: MosaicCache
 
     @Published var annotations: [Annotation] = []
-    @Published var selectedID: UUID?
-    @Published var tool: Tool = .arrow
+    /// Selected annotations. One selection shows resize handles; several
+    /// (from a marquee or shift-click) move, restyle and delete together.
+    @Published var selectedIDs: Set<UUID> = []
+    @Published var tool: Tool = .select
     @Published var color: RGBA = RGBA.palette[0]
     @Published var lineWidth: CGFloat = 4
     @Published var filled = false
     @Published var decoration: Decoration { didSet { if decoration != oldValue { decoration.save() } } }
     @Published var showInspector: Bool
+    @Published var widthPickerOpen = false
+    /// Font for new text, and for the selected text annotations.
+    @Published var fontSize: CGFloat = Annotation.defaultFontSize
+    @Published var fontName: String?
+    @Published var fontPickerOpen = false
+    @Published var fontSizePickerOpen = false
+    /// Text selected with the mouse (select tool), Live Text style.
+    @Published var textSelection: TextRange?
+    /// Recognized text with per-character boxes; filled in shortly after the editor opens.
+    private(set) var textLayout: TextLayout?
     @Published var zoom: CGFloat = 1
     @Published var toast: String?
-    @Published var ocrText: String?
     @Published var busy = false
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
@@ -52,6 +63,43 @@ final class EditorState: ObservableObject {
         let saved = Decoration.load()
         decoration = saved
         showInspector = saved.enabled
+        recognizeTextLayout()
+    }
+
+    private func recognizeTextLayout() {
+        let image = self.image, scale = self.scale
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let lines = (try? VisionService.recognize(image)) ?? []
+            let layout = VisionService.layout(lines, scale: scale)
+            DispatchQueue.main.async {
+                self?.textLayout = layout
+                self?.canvas?.needsDisplay = true
+            }
+        }
+    }
+
+    var selectedText: String? {
+        guard let range = textSelection, !range.isEmpty, let layout = textLayout else { return nil }
+        let text = layout.string(for: range)
+        return text.isEmpty ? nil : text
+    }
+
+    /// Copies the mouse-selected text; false when there is no selection.
+    func copySelectedText() -> Bool {
+        guard let text = selectedText else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        return true
+    }
+
+    func selectAllText() {
+        guard let all = textLayout?.everything else {
+            showToast("未识别到文字")
+            return
+        }
+        tool = .select
+        select(nil)
+        textSelection = all
     }
 
     /// Saves the current annotations so the capture can be reopened later.
@@ -97,7 +145,7 @@ final class EditorState: ObservableObject {
     private func restore(_ snapshot: [Annotation]) {
         canvas?.cancelTextEditing()
         annotations = snapshot
-        if let id = selectedID, !snapshot.contains(where: { $0.id == id }) { selectedID = nil }
+        selectedIDs.formIntersection(snapshot.map(\.id))
         coalesceKey = nil
         refreshUndoFlags()
     }
@@ -114,36 +162,65 @@ final class EditorState: ObservableObject {
         return annotations.firstIndex { $0.id == id }
     }
 
+    /// The selection when exactly one annotation is selected.
+    var selectedID: UUID? {
+        get { selectedIDs.count == 1 ? selectedIDs.first : nil }
+        set { selectedIDs = newValue.map { [$0] } ?? [] }
+    }
+
     var selected: Annotation? { index(of: selectedID).map { annotations[$0] } }
+
+    /// Selected annotations in drawing order.
+    var selectedAnnotations: [Annotation] { annotations.filter { selectedIDs.contains($0.id) } }
 
     func select(_ id: UUID?) {
         selectedID = id
         coalesceKey = nil
         guard let a = selected, a.kind != .mosaic else { return }
         color = a.color
-        lineWidth = a.lineWidth
-        filled = a.filled
+        if a.kind == .text {
+            fontSize = a.fontSize
+            fontName = a.fontName
+        } else {
+            lineWidth = a.lineWidth
+            filled = a.filled
+        }
+    }
+
+    /// True when the toolbar should offer font controls instead of the line width.
+    var editsText: Bool {
+        let kinds = Set(selectedAnnotations.map(\.kind))
+        return kinds.isEmpty ? tool == .text : kinds == [.text]
     }
 
     func deleteSelected() {
-        guard let i = index(of: selectedID) else { return }
+        guard !selectedAnnotations.isEmpty else { return }
         checkpoint()
-        annotations.remove(at: i)
-        selectedID = nil
+        annotations.removeAll { selectedIDs.contains($0.id) }
+        selectedIDs = []
     }
 
     private func mutateSelected(_ key: String, _ change: (inout Annotation) -> Void) {
-        guard let i = index(of: selectedID) else { return }
-        var a = annotations[i]
-        change(&a)
-        guard a != annotations[i] else { return }
-        checkpoint("\(key)-\(a.id)")
-        annotations[i] = a
+        var updated = annotations
+        for i in updated.indices where selectedIDs.contains(updated[i].id) { change(&updated[i]) }
+        guard updated != annotations else { return }
+        checkpoint("\(key)-\(selectedIDs.map(\.uuidString).sorted().joined())")
+        annotations = updated
     }
 
     func applyColor(_ c: RGBA) {
         color = c
         mutateSelected("color") { $0.color = c }
+    }
+
+    func applyFontSize(_ size: CGFloat) {
+        fontSize = size
+        mutateSelected("fontSize") { if $0.kind == .text { $0.fontPointSize = size } }
+    }
+
+    func applyFontName(_ name: String?) {
+        fontName = name
+        mutateSelected("fontName") { if $0.kind == .text { $0.fontName = name } }
     }
 
     func applyLineWidth(_ w: CGFloat) {
@@ -177,6 +254,23 @@ final class EditorState: ObservableObject {
     func renderFinal() -> CGImage? {
         canvas?.commitTextEditing()
         return Renderer.render(image: image, scale: scale, annotations: annotations, decoration: decoration, mosaic: mosaic)
+    }
+
+    /// Floats the finished image above all windows and closes the editor.
+    /// Double-clicking the pinned image reopens the editor on the original
+    /// capture with its annotations still editable.
+    func pinToScreen() {
+        guard let output = renderFinal() else {
+            showToast("悬浮失败")
+            return
+        }
+        let window = canvas?.window
+        let anchor = window.map { CGPoint(x: $0.frame.midX, y: $0.frame.midY) }
+        let shot = Shot(image: image, scale: scale), annotations = self.annotations, recentID = self.recentID
+        PinManager.pin(output, scale: scale, centeredOn: anchor) {
+            (NSApp.delegate as? AppDelegate)?.reopenEditor(shot, recentID: recentID, annotations: annotations)
+        }
+        window?.close()
     }
 
     func copyToClipboard() {
@@ -217,20 +311,6 @@ final class EditorState: ObservableObject {
     }
 
     // MARK: Vision
-
-    func runOCR() {
-        guard !busy else { return }
-        busy = true
-        let image = self.image
-        DispatchQueue.global(qos: .userInitiated).async {
-            let lines = (try? VisionService.recognize(image)) ?? []
-            let text = VisionService.plainText(lines)
-            DispatchQueue.main.async {
-                self.busy = false
-                if text.isEmpty { self.showToast("未识别到文字") } else { self.ocrText = text }
-            }
-        }
-    }
 
     func smartMosaic(_ mode: SmartMosaicMode) {
         guard !busy else { return }

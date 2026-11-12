@@ -34,22 +34,41 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     /// While true the zoom follows the viewport size.
     var autoFit = true
 
+    private enum Handle {
+        /// Moves one end of the start/end pair (shapes, lines, mosaic).
+        case corner(startX: Bool, startY: Bool)
+        /// Text box: which edges move (-1 = left/top, 1 = right/bottom, 0 = none).
+        /// Resizing changes the box only, never the font size.
+        case textBox(dx: Int, dy: Int)
+    }
+
     private enum Drag {
         case none
         case creating(UUID)
-        case moving(UUID, last: CGPoint, moved: Bool)
-        case resizing(UUID, startX: Bool, startY: Bool, moved: Bool)
+        /// Moving every selected annotation together.
+        case moving(last: CGPoint, moved: Bool)
+        /// Rubber-band selection from this point.
+        case marquee(from: CGPoint)
+        /// Dragging a handle; `original` is the annotation as it was at mouse-down.
+        case resizing(UUID, handle: Handle, original: Annotation, moved: Bool)
         /// Hand-tool drag: where the mouse went down and the scroll origin then.
         case panning(from: CGPoint, origin: CGPoint)
+        /// Dragging out a text selection from this caret.
+        case selectingText(anchor: TextPosition)
     }
 
     /// True while the space bar is held: dragging pans instead of drawing.
     private var spaceDown = false
 
     private var drag: Drag = .none
+    /// The rubber band being dragged out, in image points.
+    private var marqueeRect: CGRect?
     private var cancellable: AnyCancellable?
     private var field: NSTextField?
     private var editingOrigin: CGPoint = .zero
+    private var editingFontSize: CGFloat = Annotation.defaultFontSize
+    private var editingFontName: String?
+    private var editingBoxWidth: CGFloat?
     private var finishingEdit = false
     private var lastTool: Tool
 
@@ -57,6 +76,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         self.state = state
         lastTool = state.tool
         super.init(frame: CGRect(origin: .zero, size: state.canvasSize))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self, userInfo: nil))
         cancellable = state.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.stateChanged() }
         }
@@ -93,6 +114,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         if state.tool != lastTool {
             lastTool = state.tool
             commitTextEditing()
+            if state.tool != .select, state.textSelection != nil { state.textSelection = nil }
             window?.invalidateCursorRects(for: self)
         }
         fitIfNeeded()
@@ -214,39 +236,71 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         ctx.scaleBy(x: zoom, y: zoom)
         Renderer.draw(in: ctx, image: state.image, imageSize: state.imageSize, annotations: state.annotations,
                       decoration: state.decoration, mosaic: state.mosaic, hidden: state.editingID)
-        if let a = state.selected, a.id != state.editingID {
-            ctx.translateBy(x: imageOrigin.x, y: imageOrigin.y)
-            drawSelection(a, in: ctx)
+        ctx.translateBy(x: imageOrigin.x, y: imageOrigin.y)
+        if let range = state.textSelection, let layout = state.textLayout {
+            ctx.setFillColor(NSColor.selectedTextBackgroundColor.withAlphaComponent(0.45).cgColor)
+            for rect in layout.rects(for: range) {
+                ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerWidth: 2, cornerHeight: 2, transform: nil))
+            }
+            ctx.fillPath()
+        }
+        let selection = state.selectedAnnotations
+        if selection.count == 1 {
+            if selection[0].id != state.editingID { drawSelection(selection[0], in: ctx) }
+        } else {
+            for a in selection { drawOutline(a.bounds, in: ctx) }
+        }
+        if let marquee = marqueeRect {
+            let accent = NSColor.controlAccentColor
+            ctx.setFillColor(accent.withAlphaComponent(0.12).cgColor)
+            ctx.fill(marquee)
+            ctx.setStrokeColor(accent.cgColor)
+            ctx.setLineWidth(1 / zoom)
+            ctx.stroke(marquee)
         }
         ctx.restoreGState()
     }
 
-    private func handles(for a: Annotation) -> [(point: CGPoint, startX: Bool, startY: Bool)] {
+    private func handles(for a: Annotation) -> [(point: CGPoint, handle: Handle)] {
         switch a.kind {
         case .arrow, .line:
-            return [(a.start, true, true), (a.end, false, false)]
+            return [(a.start, .corner(startX: true, startY: true)), (a.end, .corner(startX: false, startY: false))]
         case .rect, .ellipse, .mosaic:
             return [
-                (CGPoint(x: a.start.x, y: a.start.y), true, true),
-                (CGPoint(x: a.end.x, y: a.start.y), false, true),
-                (CGPoint(x: a.start.x, y: a.end.y), true, false),
-                (CGPoint(x: a.end.x, y: a.end.y), false, false),
+                (CGPoint(x: a.start.x, y: a.start.y), .corner(startX: true, startY: true)),
+                (CGPoint(x: a.end.x, y: a.start.y), .corner(startX: false, startY: true)),
+                (CGPoint(x: a.start.x, y: a.end.y), .corner(startX: true, startY: false)),
+                (CGPoint(x: a.end.x, y: a.end.y), .corner(startX: false, startY: false)),
             ]
-        case .pen, .text:
+        case .text:
+            let b = a.bounds.insetBy(dx: -3 / zoom, dy: -3 / zoom) // on the dashed outline
+            var out: [(point: CGPoint, handle: Handle)] = []
+            for dy in [-1, 0, 1] {
+                for dx in [-1, 0, 1] where dx != 0 || dy != 0 {
+                    let x = dx < 0 ? b.minX : dx > 0 ? b.maxX : b.midX
+                    let y = dy < 0 ? b.minY : dy > 0 ? b.maxY : b.midY
+                    out.append((CGPoint(x: x, y: y), .textBox(dx: dx, dy: dy)))
+                }
+            }
+            return out
+        case .pen:
             return []
         }
+    }
+
+    private func drawOutline(_ rect: CGRect, in ctx: CGContext) {
+        let unit = 1 / zoom
+        ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+        ctx.setLineWidth(unit)
+        ctx.setLineDash(phase: 0, lengths: [4 * unit, 3 * unit])
+        ctx.stroke(rect.insetBy(dx: -3 * unit, dy: -3 * unit))
+        ctx.setLineDash(phase: 0, lengths: [])
     }
 
     private func drawSelection(_ a: Annotation, in ctx: CGContext) {
         let accent = NSColor.controlAccentColor.cgColor
         let unit = 1 / zoom
-        if a.kind != .arrow && a.kind != .line {
-            ctx.setStrokeColor(accent)
-            ctx.setLineWidth(unit)
-            ctx.setLineDash(phase: 0, lengths: [4 * unit, 3 * unit])
-            ctx.stroke(a.bounds.insetBy(dx: -3 * unit, dy: -3 * unit))
-            ctx.setLineDash(phase: 0, lengths: [])
-        }
+        if a.kind != .arrow && a.kind != .line { drawOutline(a.bounds, in: ctx) }
         let radius = 4.5 * unit
         for handle in handles(for: a) {
             let rect = CGRect(x: handle.point.x - radius, y: handle.point.y - radius, width: radius * 2, height: radius * 2)
@@ -274,6 +328,14 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         addCursorRect(bounds, cursor: cursor)
     }
 
+    /// With the select tool, recognized text shows an I-beam so it reads as selectable.
+    override func mouseMoved(with event: NSEvent) {
+        guard state.tool == .select, !spaceDown, field == nil else { return }
+        let p = docPoint(event)
+        let overText = topmost(at: p) == nil && state.textLayout?.line(at: p, slop: 3 / zoom) != nil
+        (overText ? NSCursor.iBeam : NSCursor.arrow).set()
+    }
+
     // MARK: Mouse
 
     private func docPoint(_ event: NSEvent) -> CGPoint {
@@ -297,26 +359,45 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         }
         let p = docPoint(event)
         drag = .none
+        if state.textSelection != nil { state.textSelection = nil }
 
         if let a = state.selected {
             let reach = 7 / zoom
             if let h = handles(for: a).first(where: { hypot($0.point.x - p.x, $0.point.y - p.y) <= reach }) {
-                drag = .resizing(a.id, startX: h.startX, startY: h.startY, moved: false)
+                drag = .resizing(a.id, handle: h.handle, original: a, moved: false)
                 return
             }
         }
 
         switch state.tool {
         case .select:
+            let extend = event.modifierFlags.contains(.shift)
             if let hit = topmost(at: p) {
-                state.select(hit.id)
-                if event.clickCount == 2, hit.kind == .text {
+                if extend {
+                    // Shift-click adds to / removes from the selection.
+                    if state.selectedIDs.contains(hit.id) { state.selectedIDs.remove(hit.id) } else { state.selectedIDs.insert(hit.id) }
+                } else if event.clickCount == 2, hit.kind == .text {
+                    state.select(hit.id)
                     beginTextEditing(existing: hit)
+                    return
+                } else if !state.selectedIDs.contains(hit.id) {
+                    state.select(hit.id)
+                }
+                // Dragging any member moves the whole selection.
+                if state.selectedIDs.contains(hit.id) { drag = .moving(last: p, moved: false) }
+            } else if !extend, let layout = state.textLayout,
+                      let position = layout.position(at: p, strict: true, slop: 3 / zoom) {
+                // On recognized text: select text instead.
+                state.select(nil)
+                if event.clickCount == 2 {
+                    state.textSelection = layout.wholeLine(position.line)
                 } else {
-                    drag = .moving(hit.id, last: p, moved: false)
+                    drag = .selectingText(anchor: position)
                 }
             } else {
-                state.select(nil)
+                // Empty space: rubber-band select.
+                if !extend { state.select(nil) }
+                drag = .marquee(from: p)
             }
         case .text:
             if let hit = topmost(at: p, where: { $0.kind == .text }) {
@@ -344,6 +425,10 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         switch drag {
         case .none, .panning:
             break
+        case .selectingText(let anchor):
+            guard let head = state.textLayout?.position(at: p, strict: false) else { return }
+            let range = TextRange(anchor: anchor, head: head)
+            state.textSelection = range.isEmpty ? nil : range
         case .creating(let id):
             guard let i = state.index(of: id) else { return }
             var a = state.annotations[i]
@@ -355,19 +440,56 @@ final class CanvasView: NSView, NSTextFieldDelegate {
                 a.end = event.modifierFlags.contains(.shift) ? constrain(p, from: a.start, kind: a.kind) : p
             }
             state.annotations[i] = a
-        case .moving(let id, let last, let moved):
-            guard let i = state.index(of: id) else { return }
+        case .moving(let last, let moved):
+            let delta = CGPoint(x: p.x - last.x, y: p.y - last.y)
+            guard delta != .zero, !state.selectedIDs.isEmpty else { return }
             if !moved { state.checkpoint() }
-            state.annotations[i].translate(by: CGPoint(x: p.x - last.x, y: p.y - last.y))
-            drag = .moving(id, last: p, moved: true)
-        case .resizing(let id, let startX, let startY, let moved):
+            var updated = state.annotations
+            for i in updated.indices where state.selectedIDs.contains(updated[i].id) { updated[i].translate(by: delta) }
+            state.annotations = updated
+            drag = .moving(last: p, moved: true)
+        case .marquee(let from):
+            let rect = CGRect(x: min(from.x, p.x), y: min(from.y, p.y), width: abs(p.x - from.x), height: abs(p.y - from.y))
+            marqueeRect = rect
+            let hits = state.annotations.filter { a in
+                let pad = max(a.lineWidth / 2, 1)
+                return a.bounds.insetBy(dx: -pad, dy: -pad).intersects(rect)
+            }
+            let ids = Set(hits.map(\.id))
+            if ids != state.selectedIDs { state.selectedIDs = ids }
+            needsDisplay = true
+        case .resizing(let id, let handle, let original, let moved):
             guard let i = state.index(of: id) else { return }
             if !moved { state.checkpoint() }
             var a = state.annotations[i]
-            if startX { a.start.x = p.x } else { a.end.x = p.x }
-            if startY { a.start.y = p.y } else { a.end.y = p.y }
+            switch handle {
+            case .corner(let startX, let startY):
+                if startX { a.start.x = p.x } else { a.end.x = p.x }
+                if startY { a.start.y = p.y } else { a.end.y = p.y }
+            case .textBox(let dx, let dy):
+                // The opposite edges stay put; the text re-wraps to the new width.
+                let box = original.bounds
+                if dx > 0 {
+                    a.boxWidth = max(24, p.x - box.minX)
+                } else if dx < 0 {
+                    let width = max(24, box.maxX - p.x)
+                    a.boxWidth = width
+                    a.start.x = box.maxX - width
+                }
+                if dy != 0 {
+                    // Never shorter than the text needs at the current width.
+                    let needed = max(Annotation.textSize(a.attributedText, wrapWidth: a.boxWidth).height, a.fontSize)
+                    if dy > 0 {
+                        a.boxHeight = max(needed, p.y - box.minY)
+                    } else {
+                        let height = max(needed, box.maxY - p.y)
+                        a.boxHeight = height
+                        a.start.y = box.maxY - height
+                    }
+                }
+            }
             state.annotations[i] = a
-            drag = .resizing(id, startX: startX, startY: startY, moved: true)
+            drag = .resizing(id, handle: handle, original: original, moved: true)
         }
     }
 
@@ -377,6 +499,12 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             return
         }
         defer { drag = .none }
+        if case .marquee = drag {
+            marqueeRect = nil
+            if state.selectedIDs.count == 1 { state.select(state.selectedIDs.first) }
+            needsDisplay = true
+            return
+        }
         guard case .creating(let id) = drag, let i = state.index(of: id) else { return }
         let a = state.annotations[i]
         let tooSmall = a.kind == .pen ? a.points.count < 2 : hypot(a.end.x - a.start.x, a.end.y - a.start.y) < 3
@@ -418,7 +546,11 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             state.deleteSelected()
             return true
         case 53: // escape
-            if state.selectedID != nil {
+            if state.textSelection != nil {
+                state.textSelection = nil
+                return true
+            }
+            if !state.selectedIDs.isEmpty {
                 state.select(nil)
                 return true
             }
@@ -442,24 +574,30 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     private func beginTextEditing(existing: Annotation) {
         state.editingID = existing.id
-        startField(at: existing.start, text: existing.text, color: existing.color, lineWidth: existing.lineWidth)
+        startField(at: existing.start, text: existing.text, color: existing.color, fontSize: existing.fontSize,
+                   fontName: existing.fontName, boxWidth: existing.boxWidth)
     }
 
     private func beginTextEditing(at p: CGPoint) {
         state.editingID = nil
-        startField(at: p, text: "", color: state.color, lineWidth: state.lineWidth)
+        startField(at: p, text: "", color: state.color, fontSize: state.fontSize, fontName: state.fontName)
     }
 
-    private func startField(at origin: CGPoint, text: String, color: RGBA, lineWidth: CGFloat) {
+    private func startField(at origin: CGPoint, text: String, color: RGBA, fontSize: CGFloat, fontName: String?,
+                            boxWidth: CGFloat? = nil) {
         editingOrigin = origin
+        editingFontSize = fontSize
+        editingFontName = fontName
+        editingBoxWidth = boxWidth
         let f = NSTextField(string: text)
         f.isBordered = false
         f.drawsBackground = false
         f.focusRingType = .none
         f.textColor = color.nsColor
-        f.font = Annotation.font(size: Annotation.fontSize(forLineWidth: lineWidth) * zoom)
-        f.cell?.wraps = false
-        f.cell?.isScrollable = true
+        f.cell?.wraps = true
+        f.cell?.isScrollable = false
+        f.cell?.usesSingleLineMode = false
+        f.maximumNumberOfLines = 0
         f.delegate = self
         f.wantsLayer = true
         f.layer?.borderWidth = 1
@@ -472,17 +610,40 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         needsDisplay = true
     }
 
+    /// Sizes the editing field to its text: as wide as the longest line, or
+    /// wrapped at the annotation's box width, growing downwards line by line.
     private func layoutField() {
         guard let f = field else { return }
-        let size = f.cell?.cellSize ?? f.fittingSize
+        let font = Annotation.font(name: editingFontName, size: editingFontSize * zoom)
+        f.font = font
+        var sample = f.stringValue
+        if sample.isEmpty || sample.hasSuffix("\n") { sample += " " } // keep the caret's line
+        let wrap = editingBoxWidth.map { $0 * zoom }
+        let size = Annotation.textSize(NSAttributedString(string: sample, attributes: [.font: font]), wrapWidth: wrap)
+        // The cell insets its text by 2pt on each side.
+        let width = (wrap ?? max(size.width + 14, 60)) + 4
         let x = (editingOrigin.x + imageOrigin.x) * zoom - 2
         let y = (editingOrigin.y + imageOrigin.y) * zoom
-        f.frame = CGRect(x: x, y: y, width: max(size.width + 12, 60), height: size.height)
+        f.frame = CGRect(x: x, y: y, width: width, height: size.height + 2)
     }
 
     func controlTextDidChange(_ obj: Notification) { layoutField() }
 
     func controlTextDidEndEditing(_ obj: Notification) { commitTextEditing() }
+
+    /// Return starts a new line; Esc leaves text editing, keeping what was typed.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            textView.insertNewlineIgnoringFieldEditor(nil)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            commitTextEditing()
+            return true
+        default:
+            return false
+        }
+    }
 
     func commitTextEditing() { finishTextEditing(commit: true) }
 
@@ -516,6 +677,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
                 var a = Annotation(kind: .text, start: editingOrigin, end: editingOrigin,
                                    color: state.color, lineWidth: state.lineWidth)
                 a.text = text
+                a.fontPointSize = editingFontSize
+                a.fontName = editingFontName
                 state.checkpoint()
                 state.annotations.append(a)
                 state.selectedID = a.id

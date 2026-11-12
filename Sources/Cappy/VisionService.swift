@@ -52,6 +52,53 @@ enum VisionService {
         return lines
     }
 
+    /// Per-character boxes in image points, for selecting text with the mouse.
+    static func layout(_ lines: [RecognizedLine], scale: CGFloat) -> TextLayout {
+        func points(_ r: CGRect) -> CGRect {
+            CGRect(x: r.minX / scale, y: r.minY / scale, width: r.width / scale, height: r.height / scale)
+        }
+        return TextLayout(lines: lines.map { line in
+            let text = line.text
+            let count = text.count
+            let lineRect = points(line.rect)
+            // Vision has no box for some characters (spaces come back empty).
+            var boxes: [CGRect?] = []
+            boxes.reserveCapacity(count)
+            var index = text.startIndex
+            while index < text.endIndex {
+                let next = text.index(after: index)
+                if let box = try? line.candidate.boundingBox(for: index..<next),
+                   box.boundingBox.width > 0, box.boundingBox.height > 0 {
+                    boxes.append(points(pixelRect(box.boundingBox, in: line.tile)))
+                } else {
+                    boxes.append(nil)
+                }
+                index = next
+            }
+            // Fill each run of missing boxes by splitting the gap between its neighbours.
+            var chars: [CGRect] = []
+            chars.reserveCapacity(count)
+            var i = 0
+            while i < boxes.count {
+                if let box = boxes[i] {
+                    chars.append(box)
+                    i += 1
+                    continue
+                }
+                var end = i
+                while end < boxes.count, boxes[end] == nil { end += 1 }
+                let left = chars.last?.maxX ?? lineRect.minX
+                let right = max(left, end < boxes.count ? boxes[end]!.minX : lineRect.maxX)
+                let width = (right - left) / CGFloat(end - i)
+                for k in 0..<(end - i) {
+                    chars.append(CGRect(x: left + width * CGFloat(k), y: lineRect.minY, width: width, height: lineRect.height))
+                }
+                i = end
+            }
+            return TextLine(text: text, rect: lineRect, chars: chars)
+        })
+    }
+
     static func plainText(_ lines: [RecognizedLine]) -> String {
         lines.map(\.text).joined(separator: "\n")
     }
