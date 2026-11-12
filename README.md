@@ -2,6 +2,8 @@
 
 一个原生 macOS 截图应用：截完立刻标注、打码、加装饰，不用先保存。
 
+![Cappy 编辑器：标注、智能马赛克与截图装饰](docs/screenshot.png)
+
 菜单栏应用，使用 Swift + AppKit/SwiftUI + ScreenCaptureKit + Vision 编写，需要 macOS 14 或更高版本。
 
 ## 功能
@@ -57,6 +59,12 @@ ditto -c -k --keepParent build/Cappy.app build/Cappy.app.zip
 xcrun notarytool submit build/Cappy.app.zip --keychain-profile <profile> --wait
 xcrun stapler staple build/Cappy.app
 ditto -c -k --keepParent build/Cappy.app build/Cappy.app.zip   # 重新打包带票据的应用
+```
+
+`--demo` 会打开一个带示例标注和装饰的编辑器窗口（README 里的截图就是这样生成的）：
+
+```sh
+build/Cappy.app/Contents/MacOS/Cappy --demo
 ```
 
 离线自测（渲染、OCR、长图拼接、最近截图存储，不需要屏幕录制权限）：

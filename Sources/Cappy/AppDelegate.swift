@@ -37,10 +37,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var scrollSession: ScrollCaptureController?
     private var editors: [EditorWindowController] = []
     private var preparing = false
+    /// Launched with `--demo`: show a sample editor window instead of waiting for a capture.
+    var demo = false
+    var frontEditorState: EditorState? { editors.last?.state }
     private let recentMenu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
+        if demo {
+            Demo.open(in: self)
+            return
+        }
         setUpStatusItem()
         for mode in CaptureMode.allCases {
             HotKeyCenter.shared.register(keyCode: mode.keyCode, modifiers: controlKey | optionKey) { [weak self] in

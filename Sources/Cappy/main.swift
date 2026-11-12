@@ -8,6 +8,7 @@ if let index = arguments.firstIndex(of: "--selftest") {
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
+delegate.demo = arguments.contains("--demo")
 app.delegate = delegate
 app.setActivationPolicy(.accessory)
 app.run()
