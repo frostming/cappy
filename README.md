@@ -29,11 +29,7 @@
 
 从 [Releases](../../releases) 下载 `Cappy.app.zip`，解压后拖到「应用程序」。
 
-应用未经 Apple 公证，首次打开需要在 Finder 中右键选择「打开」，或执行：
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Cappy.app
-```
+安装包使用 Developer ID 签名并经过 Apple 公证，可以直接打开。
 
 首次截图时系统会请求「屏幕录制」权限，授权后重新启动 Cappy。自动滚动另需「辅助功能」权限。
 
@@ -47,10 +43,20 @@ CAPPY_UNIVERSAL=1 ./build.sh    # 通用二进制（Apple 芯片 + Intel）
 open build/Cappy.app
 ```
 
-默认使用临时签名，每次重新构建后屏幕录制权限会失效。设置 `CAPPY_SIGN_ID` 为固定的签名证书可以避免：
+默认使用临时签名，每次重新构建后屏幕录制权限会失效。把 `CAPPY_SIGN_ID` 设为固定的签名证书可以避免，同时会启用强化运行时：
 
 ```sh
-CAPPY_SIGN_ID="Apple Development: you@example.com" ./build.sh
+CAPPY_SIGN_ID="Developer ID Application: Your Name (TEAMID)" ./build.sh
+```
+
+发布流程（签名、公证、装订）：
+
+```sh
+CAPPY_UNIVERSAL=1 CAPPY_SIGN_ID="Developer ID Application: …" ./build.sh
+ditto -c -k --keepParent build/Cappy.app build/Cappy.app.zip
+xcrun notarytool submit build/Cappy.app.zip --keychain-profile <profile> --wait
+xcrun stapler staple build/Cappy.app
+ditto -c -k --keepParent build/Cappy.app build/Cappy.app.zip   # 重新打包带票据的应用
 ```
 
 离线自测（渲染、OCR、长图拼接、最近截图存储，不需要屏幕录制权限）：

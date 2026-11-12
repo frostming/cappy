@@ -4,7 +4,7 @@
 <dict>
     <key>CFBundleName</key><string>Cappy</string>
     <key>CFBundleDisplayName</key><string>Cappy</string>
-    <key>CFBundleIdentifier</key><string>dev.cappy.Cappy</string>
+    <key>CFBundleIdentifier</key><string>dev.fming.cappy</string>
     <key>CFBundleExecutable</key><string>Cappy</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>

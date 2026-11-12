@@ -1,6 +1,8 @@
 #!/bin/bash
-# Builds build/Cappy.app. Set CAPPY_SIGN_ID to a signing identity to keep the
-# screen-recording permission across rebuilds (ad-hoc signing resets it).
+# Builds build/Cappy.app. Set CAPPY_SIGN_ID to a signing identity (e.g. a
+# "Developer ID Application: …" certificate) to sign for distribution and to
+# keep the screen-recording permission across rebuilds; without it the app is
+# ad-hoc signed and the permission resets on every build.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -31,5 +33,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Cappy"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-codesign --force --sign "${CAPPY_SIGN_ID:--}" "$APP"
+if [ -n "${CAPPY_SIGN_ID:-}" ]; then
+    # A real identity: hardened runtime + secure timestamp, as notarization requires.
+    codesign --force --options runtime --timestamp --sign "$CAPPY_SIGN_ID" "$APP"
+else
+    codesign --force --sign - "$APP"
+fi
 echo "Built $APP"
