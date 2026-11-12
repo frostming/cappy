@@ -29,7 +29,13 @@
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `Cappy.app.zip`，解压后拖到「应用程序」。
+用 Homebrew 安装：
+
+```sh
+brew install --cask frostming/tap/cappy
+```
+
+或者从 [Releases](../../releases) 下载 `Cappy.app.zip`，解压后拖到「应用程序」。
 
 安装包使用 Developer ID 签名并经过 Apple 公证，可以直接打开。
 
