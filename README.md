@@ -42,7 +42,8 @@ xattr -dr com.apple.quarantine /Applications/Cappy.app
 需要 Xcode 命令行工具（Swift 5.9+）。
 
 ```sh
-./build.sh          # 生成 build/Cappy.app
+./build.sh                      # 生成 build/Cappy.app（当前架构）
+CAPPY_UNIVERSAL=1 ./build.sh    # 通用二进制（Apple 芯片 + Intel）
 open build/Cappy.app
 ```
 

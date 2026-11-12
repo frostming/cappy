@@ -4,7 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release
+# CAPPY_UNIVERSAL=1 builds for both Apple silicon and Intel (used for releases).
+if [ "${CAPPY_UNIVERSAL:-0}" = "1" ]; then
+    ARCHS=(--arch arm64 --arch x86_64)
+else
+    ARCHS=()
+fi
+swift build -c release ${ARCHS[@]+"${ARCHS[@]}"}
+BIN="$(swift build -c release ${ARCHS[@]+"${ARCHS[@]}"} --show-bin-path)/Cappy"
 
 if [ ! -f Resources/AppIcon.icns ]; then
     tmp=$(mktemp -d)
@@ -21,7 +28,7 @@ fi
 APP=build/Cappy.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/release/Cappy "$APP/Contents/MacOS/Cappy"
+cp "$BIN" "$APP/Contents/MacOS/Cappy"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 codesign --force --sign "${CAPPY_SIGN_ID:--}" "$APP"
