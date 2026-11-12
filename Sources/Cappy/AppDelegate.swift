@@ -164,9 +164,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openEditor(loaded.shot, recentID: id, annotations: loaded.annotations)
     }
 
-    /// Opens a fresh capture in the editor and remembers it in the recent list.
+    /// A finished capture: remember it, copy it to the clipboard right away,
+    /// and show a thumbnail in the corner. The editor opens only if the
+    /// thumbnail is clicked (or later, from the recent list).
     private func openCapture(_ shot: Shot) {
-        openEditor(shot, recentID: RecentStore.shared.add(shot))
+        let id = RecentStore.shared.add(shot)
+        let screen = NSScreen.underMouse
+        // What gets copied is what the editor's "copy" would give for an
+        // untouched capture, i.e. with the saved decoration when it is on.
+        let decoration = Decoration.load()
+        let output = decoration.enabled
+            ? Renderer.render(image: shot.image, scale: shot.scale, annotations: [], decoration: decoration,
+                              mosaic: MosaicCache(image: shot.image, scale: shot.scale)) ?? shot.image
+            : shot.image
+        ThumbnailController.show(image: output, scale: shot.scale, on: screen) { [weak self] in
+            self?.reopenEditor(shot, recentID: id, annotations: [])
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let png = Bitmap.pngData(output, scale: shot.scale) else { return }
+            DispatchQueue.main.async { Clipboard.setImage(output, png: png) }
+        }
     }
 
     @objc private func captureItemClicked(_ sender: NSMenuItem) {
@@ -185,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         guard overlay == nil, !preparing, ensurePermission() else { return }
         preparing = true
+        // The previous thumbnail should not end up in this capture.
+        ThumbnailController.dismissCurrent(animated: false)
         Task { @MainActor in
             defer { self.preparing = false }
             do {

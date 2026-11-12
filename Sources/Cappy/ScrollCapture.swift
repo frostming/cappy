@@ -222,10 +222,10 @@ final class ScrollCaptureController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.level = .statusBar
         panel.sharingType = .none
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
+        panel.level = .statusBar // after isFloatingPanel, which resets the level
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
         panel.contentView = NSHostingView(rootView: ScrollHUDView(model: model))

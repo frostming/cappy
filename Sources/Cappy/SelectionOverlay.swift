@@ -40,11 +40,11 @@ final class SelectionOverlayController {
         for (screen, shot) in shots {
             let panel = OverlayPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
-            panel.level = .screenSaver
             panel.isOpaque = true
             panel.hasShadow = false
             panel.hidesOnDeactivate = false
             panel.isFloatingPanel = true
+            panel.level = .screenSaver // after isFloatingPanel, which resets the level
             panel.becomesKeyOnlyIfNeeded = false
             panel.acceptsMouseMovedEvents = true
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -63,6 +63,8 @@ final class SelectionOverlayController {
             views.append(view)
         }
     }
+
+    var panelLevels: [NSWindow.Level] { panels.map(\.level) }
 
     func show() {
         // macOS only lets the frontmost app change the pointer, so become

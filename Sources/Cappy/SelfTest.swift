@@ -28,6 +28,7 @@ enum SelfTest {
         testOverlayZoom(shot)
         testEdgeSnapping()
         testShortcuts(dir: dir)
+        testThumbnail(shot)
 
         print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
         return failures == 0
@@ -301,6 +302,8 @@ enum SelfTest {
         var result: OverlayResult?
         let controller = SelectionOverlayController(shots: [(screen, shot)], windows: [], mode: .region,
                                                     allowsWindowToggle: true, regionHint: "") { result = $0 }
+        check(controller.panelLevels.allSatisfy { $0 == .screenSaver } && !controller.panelLevels.isEmpty,
+              "the selection overlay covers the menu bar and Dock")
         let view = OverlayView(frame: CGRect(origin: .zero, size: size), screen: screen, shot: shot, windows: [],
                                controller: controller)
         let host = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: true)
@@ -455,6 +458,55 @@ enum SelfTest {
             }
             settings.window?.orderOut(nil)
         }
+    }
+
+    // MARK: Capture thumbnail
+
+    private static func testThumbnail(_ shot: Shot) {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.screens.first else { return }
+        check(ThumbnailController.thumbnailSize(for: CGSize(width: 1440, height: 900)) == CGSize(width: 200, height: 125),
+              "a full-screen capture gets a 200-wide thumbnail")
+        check(ThumbnailController.thumbnailSize(for: CGSize(width: 120, height: 40)) == CGSize(width: 120, height: 56),
+              "a small capture is not enlarged")
+        check(ThumbnailController.thumbnailSize(for: CGSize(width: 800, height: 20000)) == CGSize(width: 56, height: 130),
+              "a long capture gets a cropped, tappable thumbnail")
+
+        var opened = 0
+        let first = ThumbnailController.show(image: shot.image, scale: shot.scale, on: screen, animated: false) { opened += 1 }
+        let visible = screen.visibleFrame
+        check(first.panel.isVisible && abs(first.panel.frame.maxX - (visible.maxX - 16)) < 1
+              && abs(first.panel.frame.minY - (visible.minY + 16)) < 1, "the thumbnail sits in the bottom-right corner")
+        check(first.panel.level == .statusBar && !first.panel.canBecomeKey, "the thumbnail floats without taking focus")
+
+        // A second capture replaces the thumbnail instead of stacking.
+        let second = ThumbnailController.show(image: shot.image, scale: shot.scale, on: screen, animated: false) { opened += 10 }
+        check(!first.panel.isVisible && second.panel.isVisible && ThumbnailController.current === second,
+              "a new capture replaces the previous thumbnail")
+
+        // Clicking it opens the editor (once) and takes the thumbnail down.
+        if let view = second.panel.contentView,
+           let up = NSEvent.mouseEvent(with: .leftMouseUp, location: CGPoint(x: 20, y: 20), modifierFlags: [],
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: second.panel.windowNumber,
+                                       context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+            view.mouseUp(with: up)
+        }
+        check(opened == 10, "clicking the thumbnail opens the editor for that capture")
+        check(!second.panel.isVisible && ThumbnailController.current == nil, "the thumbnail goes away once clicked")
+
+        // Left alone, it goes away by itself.
+        let normalLifetime = ThumbnailController.lifetime
+        ThumbnailController.lifetime = 0.4
+        let fading = ThumbnailController.show(image: shot.image, scale: shot.scale, on: screen, animated: true) {}
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(fading.panel.isVisible, "the thumbnail is shown first")
+        RunLoop.main.run(until: Date().addingTimeInterval(1.2))
+        check(!fading.panel.isVisible && ThumbnailController.current == nil, "the thumbnail disappears by itself")
+        ThumbnailController.lifetime = normalLifetime
+
+        let third = ThumbnailController.show(image: shot.image, scale: shot.scale, on: screen, animated: false) {}
+        ThumbnailController.dismissCurrent(animated: false)
+        check(!third.panel.isVisible && ThumbnailController.current == nil, "starting another capture dismisses the thumbnail")
     }
 
     // MARK: Pinning

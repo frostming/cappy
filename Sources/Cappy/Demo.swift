@@ -5,6 +5,16 @@ import AppKit
 enum Demo {
     static func open(in delegate: AppDelegate) {
         let shot = makeShot()
+        // `--demo-thumbnail` shows only the post-capture thumbnail.
+        if CommandLine.arguments.contains("--demo-thumbnail") {
+            let controller = ThumbnailController.show(image: shot.image, scale: shot.scale, on: NSScreen.underMouse,
+                                                      animated: false) {}
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                print("WINDOW \(controller.panel.windowNumber)")
+                fflush(stdout)
+            }
+            return
+        }
         let scale = shot.scale
         let previous = UserDefaults.standard.data(forKey: "decoration.v1")
 

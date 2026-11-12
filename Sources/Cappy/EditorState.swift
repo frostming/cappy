@@ -278,13 +278,7 @@ final class EditorState: ObservableObject {
             showToast("复制失败")
             return
         }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setData(png, forType: .png)
-        if output.width * output.height < 24_000_000,
-           let tiff = NSBitmapImageRep(cgImage: output).tiffRepresentation {
-            pasteboard.setData(tiff, forType: .tiff)
-        }
+        Clipboard.setImage(output, png: png)
         showToast("已复制到剪贴板")
     }
 
