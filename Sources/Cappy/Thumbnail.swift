@@ -18,12 +18,15 @@ private final class ThumbnailPanel: NSPanel {
 }
 
 /// The small preview shown in the corner of the screen after a capture, like
-/// the system screenshot thumbnail: click it to edit, or let it slide away.
+/// the system screenshot thumbnail: click it to edit, pin it to the screen,
+/// or let it slide away.
 final class ThumbnailView: NSView {
     var onClick: () -> Void = {}
     var onClose: () -> Void = {}
+    var onPin: (() -> Void)? { didSet { pinButton.isHidden = true } }
     var onHover: (Bool) -> Void = { _ in }
     private let closeButton = NSButton()
+    let pinButton = NSButton()
 
     init(image: CGImage, frame: CGRect) {
         super.init(frame: frame)
@@ -48,6 +51,17 @@ final class ThumbnailView: NSView {
         closeButton.isHidden = true
         addSubview(closeButton)
 
+        pinButton.image = NSImage(systemSymbolName: "pin.circle.fill", accessibilityDescription: "悬浮到屏幕")
+        pinButton.symbolConfiguration = closeButton.symbolConfiguration
+        pinButton.isBordered = false
+        pinButton.target = self
+        pinButton.action = #selector(pinClicked)
+        pinButton.frame = CGRect(x: bounds.width - 24, y: bounds.height - 24, width: 20, height: 20)
+        pinButton.autoresizingMask = [.minXMargin, .minYMargin]
+        pinButton.toolTip = "悬浮到屏幕"
+        pinButton.isHidden = true
+        addSubview(pinButton)
+
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
         toolTip = "点击编辑"
@@ -59,11 +73,13 @@ final class ThumbnailView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         closeButton.isHidden = false
+        pinButton.isHidden = onPin == nil
         onHover(true)
     }
 
     override func mouseExited(with event: NSEvent) {
         closeButton.isHidden = true
+        pinButton.isHidden = true
         onHover(false)
     }
 
@@ -72,6 +88,8 @@ final class ThumbnailView: NSView {
     }
 
     @objc private func closeClicked() { onClose() }
+
+    @objc private func pinClicked() { onPin?() }
 }
 
 final class ThumbnailController {
@@ -97,9 +115,9 @@ final class ThumbnailController {
 
     @discardableResult
     static func show(image: CGImage, scale: CGFloat, on screen: NSScreen, animated: Bool = true,
-                     onOpen: @escaping () -> Void) -> ThumbnailController {
+                     onPin: (() -> Void)? = nil, onOpen: @escaping () -> Void) -> ThumbnailController {
         current?.dismiss(animated: false)
-        let controller = ThumbnailController(image: image, scale: scale, screen: screen, onOpen: onOpen)
+        let controller = ThumbnailController(image: image, scale: scale, screen: screen, onPin: onPin, onOpen: onOpen)
         current = controller
         controller.present(animated: animated)
         return controller
@@ -109,7 +127,7 @@ final class ThumbnailController {
         current?.dismiss(animated: animated)
     }
 
-    private init(image: CGImage, scale: CGFloat, screen: NSScreen, onOpen: @escaping () -> Void) {
+    private init(image: CGImage, scale: CGFloat, screen: NSScreen, onPin: (() -> Void)?, onOpen: @escaping () -> Void) {
         let size = Self.thumbnailSize(for: CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale))
         let visible = screen.visibleFrame
         restingFrame = CGRect(x: visible.maxX - size.width - 16, y: visible.minY + 16, width: size.width, height: size.height)
@@ -133,6 +151,12 @@ final class ThumbnailController {
             onOpen()
         }
         view.onClose = { [weak self] in self?.dismiss(animated: true) }
+        if let onPin {
+            view.onPin = { [weak self] in
+                self?.dismiss(animated: false)
+                onPin()
+            }
+        }
         // Hovering keeps it around; leaving restarts the countdown.
         view.onHover = { [weak self] inside in inside ? self?.timer?.invalidate() : self?.startTimer() }
         panel.contentView = view

@@ -177,7 +177,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? Renderer.render(image: shot.image, scale: shot.scale, annotations: [], decoration: decoration,
                               mosaic: MosaicCache(image: shot.image, scale: shot.scale)) ?? shot.image
             : shot.image
-        ThumbnailController.show(image: output, scale: shot.scale, on: screen) { [weak self] in
+        ThumbnailController.show(image: output, scale: shot.scale, on: screen, onPin: { [weak self] in
+            // Centered on the screen the thumbnail is on; double-click edits it, like a pin from the editor.
+            let anchor = CGPoint(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY)
+            PinManager.pin(output, scale: shot.scale, centeredOn: anchor) {
+                self?.reopenEditor(shot, recentID: id, annotations: [])
+            }
+        }) { [weak self] in
             self?.reopenEditor(shot, recentID: id, annotations: [])
         }
         DispatchQueue.global(qos: .userInitiated).async {

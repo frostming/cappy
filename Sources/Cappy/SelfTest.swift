@@ -523,6 +523,18 @@ enum SelfTest {
         check(opened == 10, "clicking the thumbnail opens the editor for that capture")
         check(!second.panel.isVisible && ThumbnailController.current == nil, "the thumbnail goes away once clicked")
 
+        // Its pin button floats the capture and takes the thumbnail down, without opening the editor.
+        var pinned = 0
+        let pinnable = ThumbnailController.show(image: shot.image, scale: shot.scale, on: screen, animated: false,
+                                                onPin: { pinned += 1 }) { opened += 100 }
+        if let view = pinnable.panel.contentView as? ThumbnailView {
+            view.mouseEntered(with: NSEvent())
+            check(!view.pinButton.isHidden, "hovering the thumbnail shows its pin button")
+            view.pinButton.performClick(nil)
+        }
+        check(pinned == 1 && opened == 10, "the thumbnail's pin button pins instead of opening the editor")
+        check(!pinnable.panel.isVisible && ThumbnailController.current == nil, "the thumbnail goes away once pinned")
+
         // Left alone, it goes away by itself.
         let normalLifetime = ThumbnailController.lifetime
         ThumbnailController.lifetime = 0.4
