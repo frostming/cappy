@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -42,13 +43,17 @@ enum Bitmap {
     }
 }
 
-/// Lazily builds a low-resolution copy of the image; drawing it back with
-/// nearest-neighbour sampling gives the mosaic effect for any rectangle.
+/// Lazily builds filtered copies of the whole image; a mosaic annotation
+/// clips one of them to its rectangle. The low-resolution copy drawn back
+/// with nearest-neighbour sampling gives the pixelated look, the blurred copy
+/// the Gaussian-blur look.
 final class MosaicCache {
     let image: CGImage
     let scale: CGFloat
     /// Mosaic cell size in points.
     let block: CGFloat = 10
+    /// Gaussian blur radius (sigma) in points; strong enough to make text unreadable.
+    let blurRadius: CGFloat = 12
 
     init(image: CGImage, scale: CGFloat) {
         self.image = image
@@ -63,6 +68,17 @@ final class MosaicCache {
         ctx.interpolationQuality = .high
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage()
+    }()
+
+    private(set) lazy var blurred: CGImage? = {
+        let input = CIImage(cgImage: image)
+        // Clamp first so the edges don't fade toward transparent.
+        let output = input.clampedToExtent()
+            .applyingGaussianBlur(sigma: Double(blurRadius * scale))
+            .cropped(to: input.extent)
+        let space = Bitmap.usableColorSpace(image.colorSpace)
+        let context = CIContext(options: [.workingColorSpace: space, .outputColorSpace: space])
+        return context.createCGImage(output, from: input.extent)
     }()
 }
 
@@ -202,10 +218,22 @@ enum Renderer {
                                   options: Annotation.textDrawingOptions)
             NSGraphicsContext.restoreGraphicsState()
         case .mosaic:
-            guard let small = mosaic.small else { return }
-            ctx.clip(to: a.rect)
-            ctx.interpolationQuality = .none
-            ctx.drawFlipped(small, in: CGRect(origin: .zero, size: imageSize))
+            switch a.effectiveMosaicStyle {
+            case .solid:
+                // Always opaque: a translucent block would leak what it covers.
+                ctx.setFillColor(RGBA(a.color.r, a.color.g, a.color.b, 1).cgColor)
+                ctx.fill(a.rect)
+            case .blur:
+                guard let blurred = mosaic.blurred else { return }
+                ctx.clip(to: a.rect)
+                ctx.interpolationQuality = .high
+                ctx.drawFlipped(blurred, in: CGRect(origin: .zero, size: imageSize))
+            case .pixelate:
+                guard let small = mosaic.small else { return }
+                ctx.clip(to: a.rect)
+                ctx.interpolationQuality = .none
+                ctx.drawFlipped(small, in: CGRect(origin: .zero, size: imageSize))
+            }
         }
     }
 

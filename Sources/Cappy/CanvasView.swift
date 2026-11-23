@@ -411,6 +411,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             guard let kind = state.tool.annotationKind else { return }
             var a = Annotation(kind: kind, start: p, end: p, color: state.color, lineWidth: state.lineWidth)
             a.filled = state.filled && (kind == .rect || kind == .ellipse)
+            if kind == .mosaic { a.mosaicStyle = state.mosaicStyle }
             if kind == .pen { a.points = [p] }
             state.checkpoint()
             state.annotations.append(a)

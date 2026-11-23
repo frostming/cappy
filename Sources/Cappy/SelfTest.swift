@@ -178,6 +178,35 @@ enum SelfTest {
         let transparent = Renderer.render(image: shot.image, scale: shot.scale, annotations: [],
                                           decoration: decoration, mosaic: mosaic)
         check(transparent.map { pixel($0, x: 2, y: 2).a == 0 } ?? false, "transparent background stays transparent")
+
+        // Each mosaic style must change the covered pixels; solid fills with the (opaque) annotation color.
+        let region = CGRect(x: 150, y: 150, width: 180, height: 36)
+        let cx = Int(region.midX * shot.scale), cy = Int(region.midY * shot.scale)
+        for style in MosaicStyle.allCases {
+            var m = Annotation(kind: .mosaic, start: region.origin, end: CGPoint(x: region.maxX, y: region.maxY),
+                               color: RGBA(0, 0, 1, 0.3), lineWidth: 3)
+            m.mosaicStyle = style
+            guard let out = Renderer.render(image: shot.image, scale: shot.scale, annotations: [m],
+                                            decoration: Decoration(), mosaic: mosaic) else {
+                check(false, "\(style) mosaic renders")
+                continue
+            }
+            if style == .solid {
+                let p = pixel(out, x: cx, y: cy)
+                check(p.r == 0 && p.g == 0 && p.b == 255 && p.a == 255, "solid mosaic is an opaque block")
+            } else {
+                var changed = 0
+                for dx in stride(from: -80, through: 80, by: 8) {
+                    let x = cx + Int(CGFloat(dx) * shot.scale)
+                    if pixel(out, x: x, y: cy) != pixel(shot.image, x: x, y: cy) { changed += 1 }
+                }
+                check(changed > 5, "\(style) mosaic alters the covered pixels")
+            }
+        }
+        if let data = try? JSONEncoder().encode(Annotation(kind: .mosaic, start: .zero, end: .zero, color: red, lineWidth: 3)),
+           let decoded = try? JSONDecoder().decode(Annotation.self, from: data) {
+            check(decoded.effectiveMosaicStyle == .pixelate, "legacy mosaic decodes as pixelate")
+        }
     }
 
     private static func pixel(_ image: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {

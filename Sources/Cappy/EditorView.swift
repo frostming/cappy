@@ -410,6 +410,14 @@ struct ToolbarView: View {
             if state.editsText {
                 FontPicker(state: state)
                 FontSizePicker(state: state)
+            } else if state.editsMosaic {
+                HStack(spacing: 2) {
+                    ForEach(MosaicStyle.allCases) { style in
+                        IconButton(symbol: style.symbol, active: state.mosaicStyle == style, help: style.title) {
+                            state.applyMosaicStyle(style)
+                        }
+                    }
+                }
             } else {
                 LineWidthPicker(state: state)
             }

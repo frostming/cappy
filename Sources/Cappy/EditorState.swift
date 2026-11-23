@@ -23,6 +23,8 @@ final class EditorState: ObservableObject {
     @Published var color: RGBA = RGBA.palette[0]
     @Published var lineWidth: CGFloat = 4
     @Published var filled = false
+    /// Style for new mosaics, and for the selected mosaics.
+    @Published var mosaicStyle: MosaicStyle = MosaicStyle.load() { didSet { mosaicStyle.save() } }
     @Published var decoration: Decoration { didSet { if decoration != oldValue { decoration.save() } } }
     @Published var showInspector: Bool
     @Published var widthPickerOpen = false
@@ -176,7 +178,12 @@ final class EditorState: ObservableObject {
     func select(_ id: UUID?) {
         selectedID = id
         coalesceKey = nil
-        guard let a = selected, a.kind != .mosaic else { return }
+        guard let a = selected else { return }
+        if a.kind == .mosaic {
+            mosaicStyle = a.effectiveMosaicStyle
+            if mosaicStyle == .solid { color = a.color }
+            return
+        }
         color = a.color
         if a.kind == .text {
             fontSize = a.fontSize
@@ -191,6 +198,12 @@ final class EditorState: ObservableObject {
     var editsText: Bool {
         let kinds = Set(selectedAnnotations.map(\.kind))
         return kinds.isEmpty ? tool == .text : kinds == [.text]
+    }
+
+    /// True when the toolbar should offer the mosaic style instead of the line width.
+    var editsMosaic: Bool {
+        let kinds = Set(selectedAnnotations.map(\.kind))
+        return kinds.isEmpty ? tool == .mosaic : kinds == [.mosaic]
     }
 
     func deleteSelected() {
@@ -226,6 +239,11 @@ final class EditorState: ObservableObject {
     func applyLineWidth(_ w: CGFloat) {
         lineWidth = w
         mutateSelected("width") { $0.lineWidth = w }
+    }
+
+    func applyMosaicStyle(_ style: MosaicStyle) {
+        mosaicStyle = style
+        mutateSelected("mosaicStyle") { if $0.kind == .mosaic { $0.mosaicStyle = style } }
     }
 
     func applyFilled(_ f: Bool) {
@@ -333,8 +351,10 @@ final class EditorState: ObservableObject {
         for r in pixelRects {
             let p = CGRect(x: r.minX / scale, y: r.minY / scale, width: r.width / scale, height: r.height / scale)
                 .insetBy(dx: -2, dy: -2)
-            annotations.append(Annotation(kind: .mosaic, start: p.origin, end: CGPoint(x: p.maxX, y: p.maxY),
-                                          color: color, lineWidth: lineWidth))
+            var a = Annotation(kind: .mosaic, start: p.origin, end: CGPoint(x: p.maxX, y: p.maxY),
+                               color: color, lineWidth: lineWidth)
+            a.mosaicStyle = mosaicStyle
+            annotations.append(a)
         }
         selectedID = nil
         showToast("已自动打码 \(pixelRects.count) 处")

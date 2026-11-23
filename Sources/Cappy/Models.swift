@@ -91,6 +91,44 @@ enum Tool: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Mosaic style
+
+/// How a mosaic annotation hides what is underneath it.
+enum MosaicStyle: String, Codable, CaseIterable, Identifiable {
+    /// An opaque block in the annotation's color.
+    case solid
+    /// A Gaussian blur of the image.
+    case blur
+    /// Classic pixelation.
+    case pixelate
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .solid: return "色块"
+        case .blur: return "高斯模糊"
+        case .pixelate: return "马赛克"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .solid: return "rectangle.fill"
+        case .blur: return "drop.halffull"
+        case .pixelate: return "checkerboard.rectangle"
+        }
+    }
+
+    private static let defaultsKey = "mosaicStyle"
+
+    static func load() -> MosaicStyle {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(MosaicStyle.init(rawValue:)) ?? .pixelate
+    }
+
+    func save() { UserDefaults.standard.set(rawValue, forKey: MosaicStyle.defaultsKey) }
+}
+
 // MARK: - Annotation
 
 /// All coordinates are in image points, origin at the image's top-left corner.
@@ -115,6 +153,10 @@ struct Annotation: Identifiable, Equatable, Codable {
     var fontPointSize: CGFloat?
     /// Text only: font family. nil = the system font.
     var fontName: String?
+    /// Mosaic only. nil in captures saved before mosaic had styles (pixelated).
+    var mosaicStyle: MosaicStyle?
+
+    var effectiveMosaicStyle: MosaicStyle { mosaicStyle ?? .pixelate }
 
     static let defaultFontSize: CGFloat = 24
 
